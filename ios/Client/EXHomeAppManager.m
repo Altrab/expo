@@ -37,7 +37,7 @@ NSString *kEXHomeManifestResourceName = @"kernel-manifest";
     @"constants": @{
         @"expoRuntimeVersion": [EXBuildConstants sharedInstance].expoRuntimeVersion,
         @"linkingUri": @"exp://",
-        @"experienceUrl": [@"exp://" stringByAppendingString:self.appRecord.appLoader.manifest.hostUri],
+//        @"experienceUrl": [@"exp://" stringByAppendingString:self.appRecord.appLoader.manifest.hostUri],
         @"manifest": self.appRecord.appLoader.manifest.rawManifestJSON,
         @"executionEnvironment": EXConstantsExecutionEnvironmentStoreClient,
         @"appOwnership": @"expo",

@@ -1,10 +1,14 @@
 import JsonFile from '@expo/json-file';
+import {
+  isMultipartPartWithName,
+  parseMultipartMixedResponseAsync,
+} from '@expo/multipart-body-parser';
 import spawnAsync from '@expo/spawn-async';
-import { ExponentTools, Project, UrlUtils } from '@expo/xdl';
+import { Project, UrlUtils } from '@expo/xdl';
 import chalk from 'chalk';
 import crypto from 'crypto';
 import ip from 'ip';
-import fetch from 'node-fetch';
+import fetch, { Response } from 'node-fetch';
 import os from 'os';
 import path from 'path';
 
@@ -13,8 +17,13 @@ import { getHomeSDKVersionAsync } from '../ProjectVersions';
 
 interface Manifest {
   id: string;
-  name: string;
-  extra?: {
+  createdAt: string;
+  runtimeVersion: string;
+  metadata: { [key: string]: string };
+  extra: {
+    eas: {
+      projectId: string;
+    };
     expoClient?: {
       name: string;
     };
@@ -26,38 +35,47 @@ const isTurtle = !!process.env.TURTLE_WORKING_DIR_PATH;
 
 const EXPO_DIR = getExpoRepositoryRootDir();
 
-async function getManifestAsync(
-  url: string,
-  platform: string,
-  sdkVersion: string | null
-): Promise<Manifest> {
-  const headers = {
-    'Exponent-Platform': platform,
-    Accept: 'application/expo+json,application/json',
-  };
-  if (sdkVersion) {
-    headers['Exponent-SDK-Version'] = sdkVersion;
+async function getManifestBodyAsync(response: Response): Promise<Manifest> {
+  const contentType = response.headers.get('content-type');
+  if (!contentType) {
+    throw new Error('The multipart manifest response is missing the content-type header');
   }
-  return await ExponentTools.getManifestAsync(url, headers, {
-    logger: {
-      log: () => {},
-      error: () => {},
-      info: () => {},
-    },
-  });
+
+  if (contentType === 'application/expo+json' || contentType === 'application/json') {
+    const text = await response.text();
+    return JSON.parse(text);
+  }
+
+  const bodyBuffer = await response.arrayBuffer();
+  const multipartParts = await parseMultipartMixedResponseAsync(
+    contentType,
+    Buffer.from(bodyBuffer)
+  );
+  const manifestPart = multipartParts.find((part) => isMultipartPartWithName(part, 'manifest'));
+  if (!manifestPart) {
+    throw new Error('The multipart manifest response is missing the manifest part');
+  }
+
+  return JSON.parse(manifestPart.body);
 }
 
-async function getSavedDevHomeUrlAsync(): Promise<string> {
+async function getManifestAsync(url: string, platform: string): Promise<Manifest> {
+  const response = await fetch(url.replace('exp://', 'http://').replace('exps://', 'https://'), {
+    method: 'GET',
+    headers: {
+      accept: 'multipart/mixed,application/expo+json,application/json',
+      'expo-platform': platform,
+    },
+  });
+  return await getManifestBodyAsync(response);
+}
+
+async function getSavedDevHomeEASUpdateUrlAsync(): Promise<string> {
   const devHomeConfig = await new JsonFile(path.join(EXPO_DIR, 'dev-home-config.json')).readAsync();
   return devHomeConfig.url as string;
 }
 
-function kernelManifestObjectToJson(manifest) {
-  if (!manifest.id) {
-    // hack for now because unsigned manifest won't have an id
-    manifest.id = '@exponent/home';
-  }
-  manifest.sdkVersion = 'UNVERSIONED';
+function kernelManifestObjectToJson(manifest: Manifest) {
   return JSON.stringify(manifest);
 }
 
@@ -127,10 +145,8 @@ export default {
   async DEV_PUBLISHED_KERNEL_MANIFEST(platform) {
     let manifest, savedDevHomeUrl;
     try {
-      savedDevHomeUrl = await getSavedDevHomeUrlAsync();
-      const sdkVersion = await this.TEMPORARY_SDK_VERSION();
-
-      manifest = await getManifestAsync(savedDevHomeUrl, platform, sdkVersion);
+      savedDevHomeUrl = await getSavedDevHomeEASUpdateUrlAsync();
+      manifest = await getManifestAsync(savedDevHomeUrl, platform);
     } catch (e) {
       const msg = `Unable to download manifest from ${savedDevHomeUrl}: ${e.message}`;
       console[isTurtle ? 'debug' : 'error'](msg);
@@ -154,7 +170,7 @@ export default {
     const url = await UrlUtils.constructManifestUrlAsync(path.join(EXPO_DIR, pathToHome));
 
     try {
-      const manifest = await getManifestAsync(url, platform, null);
+      const manifest = await getManifestAsync(url, platform);
 
       if (manifest.extra?.expoClient?.name !== 'expo-home') {
         console.log(
